@@ -1,4 +1,6 @@
 __pycache__/
 *.png
 *.csv
-.streamlit/secrets.toml
+!data/*.csv
+.ipynb_checkpoints/
+.streamlit/secrets.tomlresearch/

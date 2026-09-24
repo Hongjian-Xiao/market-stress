@@ -3,6 +3,9 @@ market stress monitor website
 run:  streamlit run app.py
 all calculations live in entropy_stress.py, this file only builds the page
 """
+import re
+import smtplib
+from email.message import EmailMessage
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -30,7 +33,7 @@ price_color="#2f5d8a"
 def get_data():
     # refreshed at most every 6 hours; only new days are calculated
     prices=es.load_all()
-    stress=es.update_all(prices)
+    stress=es.update_all(prices,allow_full=False)
     metrics={key:es.daily_metrics(s) for key,s in stress.items()}
     return prices,metrics
 
@@ -196,17 +199,17 @@ st.markdown(f"Stress measured as loss of complexity in daily prices. Based on Xi
     f"[*Financial stress evaluation: a complexity science approach*, Financial Innovation 12:30]({paper_url}).  \n"
     f"Questions or feedback: [{contact}](mailto:{contact})")
 
-with st.spinner("Loading prices and updating stress (the first run after a restart can take a minute)..."):
+with st.spinner("Loading prices and updating stress..."):
     try:
         prices,metrics=get_data()
+    except es.HistoryMissing as err:
+        st.error(f"The stress history is not built yet ({err}). Run research/05_build_data.ipynb, then push the data folder.")
+        st.stop()
     except Exception as err:
         st.error(f"Could not load data from Yahoo Finance: {err}. Please try again in a minute.")
         st.stop()
 
 overall=metrics["mmse_4idx"]
-price_date=max(p.index[-1] for p in prices.values())
-st.caption(f"Stress up to {overall.index[-1].strftime('%d %b %Y')} · prices up to {price_date.strftime('%d %b %Y')} "
-    "(stress lags prices by a few days, see How it works)")
 
 # overall market
 st.header("Overall US market")
@@ -216,7 +219,8 @@ with left:
     last=overall.iloc[-1]
     st.markdown(pill(last["status"]),unsafe_allow_html=True)
     st.markdown(f'<div style="{num_style};font-size:52px;font-weight:600;line-height:1.2;color:{number_colors[last["status"]]}">'
-        f'{last["stress"]:.3f}<span style="font-size:14px;font-weight:400;color:#3d424b"> stress</span></div>',unsafe_allow_html=True)
+        f'{last["stress"]:.3f}<span style="font-size:14px;font-weight:400;color:#3d424b"> stress</span></div>'
+        f'<div style="font-size:13px;color:#6b7079">as of {overall.index[-1].strftime("%d %b %Y")}</div>',unsafe_allow_html=True)
     st.write(summary_sentence(overall))
     st.markdown(rows(stress_rows(overall)),unsafe_allow_html=True)
 with right:
@@ -266,7 +270,8 @@ a,b=st.columns(2,gap="large")
 with a:
     st.markdown("**Stress**")
     st.markdown(rows([
-        ("current",f'<span style="color:{number_colors[last["status"]]};font-weight:600">{last["stress"]:.3f} · {last["status"]}</span>'),
+        ("current",f'<span style="color:{number_colors[last["status"]]};font-weight:600">{last["stress"]:.3f} · {last["status"]}</span>'
+            f' ({df.index[-1].strftime("%d %b %Y")})'),
         ("vs normal level",colored(signed(last["vs_normal_pct"],0,"%"),last["vs_normal_pct"],True)),
         ("percentile in history",f"{last['percentile']:.0f}%"),
         ("vs yesterday / last week / last month",f"{stress_change(last,'1d')} / {stress_change(last,'1w')} / {stress_change(last,'1m')}"),
@@ -283,10 +288,79 @@ with b:
     ]),unsafe_allow_html=True)
 
 st.divider()
+
+
+# ---------- how it works ----------
+
 st.subheader("How it works")
-st.write("In calm markets daily prices move randomly (high sample entropy). In crises they become more predictable "
-    "(low entropy), so stress = 1 / entropy rises. Each value uses the previous 4 years of prices, so a crisis stays "
-    "in the measure for 4 years. The moving-average filter needs 2 days on each side, and the market-wide measure "
-    "needs all 4 indices on the same day, so stress lags the latest prices by a few trading days. Changes in stress are "
-    "shown as % of the earlier value. Green means good news (lower stress, positive return), red bad news. The status compares today with all earlier days: calm below the 25th percentile, "
-    "normal 25–75%, elevated 75–95%, high above 95%. Data: Yahoo Finance, updated daily.")
+st.markdown(
+    "**The idea.** In calm markets daily prices move randomly, which gives high sample entropy. "
+    "In a crisis they become more predictable and entropy falls, so stress = 1 / entropy rises.\n\n"
+    "**The calculation.** The trend is removed with a 5-day trailing moving average, so each value only uses prices "
+    "available on that day. Each value then looks back over 4 years of prices, so a crisis stays in the measure for "
+    "4 years. The overall market combines all 4 indices (multivariate entropy) and needs all of them on the same day.\n\n"
+    "**The status.** Today's stress is compared with all earlier days: calm below the 25th percentile, normal 25–75%, "
+    "elevated 75–95%, high above 95%. Changes in stress are shown as % of the earlier value. "
+    "Green means good news (lower stress, positive return), red means bad news.")
+st.caption("Data source: Yahoo Finance, daily closing prices since 1991, updated daily.")
+
+
+# ---------- request form ----------
+
+def send_request(kind,what,email,message):
+    # sends the request to the owner's inbox; login details come from streamlit secrets, never from the code
+    conf=st.secrets["email"]
+    msg=EmailMessage()
+    msg["Subject"]=f"Market stress monitor request: {kind} – {what or 'no name given'}"
+    msg["From"]=conf["user"]
+    msg["To"]=conf["to"]
+    msg["Reply-To"]=email
+    msg.set_content(f"Request type: {kind}\nTicker / name: {what}\nFrom: {email}\n\n{message}")
+    with smtplib.SMTP_SSL("smtp.gmail.com",465,timeout=20) as server:
+        server.login(conf["user"],conf["app_password"])
+        server.send_message(msg)
+
+
+def email_configured():
+    # true when the gmail login is set in streamlit secrets; no secrets file at all is fine too
+    try:
+        return "email" in st.secrets
+    except Exception:
+        return False
+
+
+def email_ok(text):
+    return re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",text.strip()) is not None
+
+
+st.divider()
+st.subheader("Request a ticker or feature")
+st.write("Would you like to see another index, stock or market here, or have an idea for the monitor? Send a request.")
+
+if st.session_state.get("request_sent"):
+    st.success("Thank you, your request has been sent. I'll get back to you by email.")
+elif not email_configured():
+    st.info(f"Please send requests by email to [{contact}](mailto:{contact}).")
+else:
+    with st.form("request",clear_on_submit=False):
+        a,b=st.columns(2)
+        with a:
+            kind=st.selectbox("Request type",["New ticker or index","New feature","Question","Other"])
+            what=st.text_input("Ticker or name (optional)",placeholder="e.g. FTSE 100, AAPL, gold",max_chars=100)
+        with b:
+            email=st.text_input("Your email",placeholder="so I can reply",max_chars=200)
+            message=st.text_area("Message",max_chars=2000,height=108)
+        st.caption("Your email is only used to reply to your request.")
+        submitted=st.form_submit_button("Send request")
+    if submitted:
+        if not email_ok(email):
+            st.warning("Please enter a valid email address.")
+        elif not (what.strip() or message.strip()):
+            st.warning("Please add a ticker name or a short message.")
+        else:
+            try:
+                send_request(kind,what.strip(),email.strip(),message.strip())
+                st.session_state["request_sent"]=True
+                st.rerun()
+            except Exception:
+                st.error(f"Sorry, the request could not be sent. Please email [{contact}](mailto:{contact}) instead.")

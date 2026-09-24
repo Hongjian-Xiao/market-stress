@@ -1,0 +1,8 @@
+{
+ "tau": 5,
+ "window": 1044,
+ "m": 2,
+ "r_factor": 0.15,
+ "step": 1,
+ "detrend": "trailing"
+}

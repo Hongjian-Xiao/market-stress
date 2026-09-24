@@ -3,10 +3,11 @@ engine for the website: data, entropy calculation and metrics
 same method as the research notebooks 02 (mse) and 03 (mmse), one value per trading day
 
 results are saved in data/ and only new days are calculated on each update
-build the full history once (or copy the csv files from research/results):
-    python entropy_stress.py
+the full history is built with research/05_build_data.ipynb (or: python entropy_stress.py)
+the website never rebuilds the full history itself
 """
 from pathlib import Path
+import json
 import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
@@ -56,7 +57,9 @@ def standardize(x):
 
 
 def ma_detrend(x,tau=tau):
-    trend=x.rolling(tau,center=True).mean()
+    # trailing moving average: the trend on day t uses days t-tau+1 ... t only,
+    # so no future data is needed and the latest day can be calculated
+    trend=x.rolling(tau).mean()
     return (x-trend).dropna()
 
 
@@ -104,9 +107,21 @@ def mmse_window(seg):
 
 # ---------- saved results and incremental update ----------
 
+def current_settings():
+    return {"tau":tau,"window":window,"m":m,"r_factor":r_factor,"step":step,"detrend":"trailing"}
+
+
+def settings_match():
+    # saved results are only reused if they were made with the same settings
+    path=data_dir/"settings.json"
+    if not path.exists():
+        return False
+    return json.loads(path.read_text())==current_settings()
+
+
 def load_saved(key):
     path=data_dir/f"{key}.csv"
-    if not path.exists():
+    if not path.exists() or not settings_match():
         return None
     return pd.read_csv(path,index_col="date",parse_dates=True)["value"].rename(key)
 
@@ -115,13 +130,21 @@ def save(stress,key):
     try:
         data_dir.mkdir(exist_ok=True)
         stress.to_frame("value").to_csv(data_dir/f"{key}.csv",index_label="date")
+        (data_dir/"settings.json").write_text(json.dumps(current_settings(),indent=1))
     except OSError:
         pass  # read-only disk: keep the result in memory only
 
 
-def update_series(key,y,entropy_fn):
+class HistoryMissing(RuntimeError):
+    pass
+
+
+def update_series(key,y,entropy_fn,allow_full=True):
     # stress = 1 / entropy, calculating only the windows after the last saved date
+    # allow_full=False (the website): refuse to rebuild the whole history, that is done in research/05
     saved=load_saved(key)
+    if saved is None and not allow_full:
+        raise HistoryMissing(f"no saved history for {key} with the current settings")
     after=None
     if saved is not None and len(saved)>recompute_last:
         after=saved.index[-recompute_last-1]
@@ -139,15 +162,15 @@ def update_series(key,y,entropy_fn):
     return stress
 
 
-def update_all(prices):
+def update_all(prices,allow_full=True):
     # prices: dict key -> price series. returns dict of stress series
     stress={}
     for key,p in prices.items():
         y=ma_detrend(standardize(p))
-        stress[f"mse_{key}"]=update_series(f"mse_{key}",y,mse_window)
+        stress[f"mse_{key}"]=update_series(f"mse_{key}",y,mse_window,allow_full)
     frame=pd.concat(prices.values(),axis=1).dropna()
     y=frame.apply(standardize).apply(ma_detrend).dropna()
-    stress["mmse_4idx"]=update_series("mmse_4idx",y,mmse_window)
+    stress["mmse_4idx"]=update_series("mmse_4idx",y,mmse_window,allow_full)
     return stress
 
 

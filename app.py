@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 import entropy_stress as es
+import trading as tr
 
 st.set_page_config(page_title="Market stress monitor",page_icon="📉",layout="wide")
 
@@ -192,6 +193,99 @@ def detail_chart(df,prices,show_normal):
     return fig
 
 
+# ---------- my stocks: trend + entropy strategy (trading.py) ----------
+
+buy_color="#1f6f4a"
+sell_color="#8a2b4f"
+held_color="#eb6834"
+
+
+@st.cache_data(ttl=60*60,show_spinner=False)
+def get_trading():
+    # refreshed at most every hour; positions are replayed from tr.start_close, nothing is stored
+    return tr.run(allow_full=False)
+
+
+def trade_word(old,new):
+    if new>old:
+        return "buy full" if new-old>0.9 else "buy half"
+    return "sell all" if new==0 else "sell half"
+
+
+def action_of(r):
+    # (kind, label) of today's action
+    if r["action"] is None:
+        if r["held"]==0:
+            return "out","Stay out"
+        return "hold","Hold full" if r["held"]==1 else "Hold half"
+    old,new=r["action"]
+    word=trade_word(old,new)
+    return ("buy" if new>old else "sell"),("▲ " if new>old else "▼ ")+word.capitalize()
+
+
+def action_pill(r):
+    kind,label=action_of(r)
+    bg,fg,border={"buy":(buy_color,"#ffffff","none"),"sell":(sell_color,"#ffffff","none"),
+        "hold":("#ffffff",ink,f"1px solid {ink}"),"out":("#ebe8e1","#3d424b","none")}[kind]
+    return (f'<span style="display:inline-block;padding:4px 12px;border-radius:999px;background:{bg};color:{fg};border:{border};'
+        f'font-size:13px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;white-space:nowrap">{label}</span>')
+
+
+def held_text(x):
+    return {0:"—",0.5:"half",1:"full"}.get(x,f"{x:.0%}")
+
+
+def date_box(label,value,dark=False):
+    bg,fg,sub=("#16181d","#ffffff","#c9c5bb") if dark else ("#ffffff",ink,"#6b7079")
+    return (f'<div style="padding:14px 18px;margin-bottom:8px;background:{bg};border:1px solid #d8d4ca;border-radius:10px">'
+        f'<div style="font-size:12px;color:{sub};text-transform:uppercase;letter-spacing:0.06em">{label}</div>'
+        f'<div style="{num_style};font-size:20px;color:{fg}">{value}</div></div>')
+
+
+def count_tiles(res):
+    kinds=[action_of(r)[0] for r in res.values()]
+    tiles=[("buy",buy_color,"#ffffff"),("sell",sell_color,"#ffffff"),("hold","#ffffff",ink),("out","#ebe8e1","#3d424b")]
+    html="".join(f'<div style="flex:1;padding:12px 14px;border-radius:10px;background:{bg};color:{fg};border:1px solid #d8d4ca">'
+        f'<div style="font-size:12px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase">{"stay out" if k=="out" else k}</div>'
+        f'<div style="{num_style};font-size:28px">{kinds.count(k)}</div></div>' for k,bg,fg in tiles)
+    return f'<div style="display:flex;gap:14px">{html}</div>'
+
+
+def action_rows(res):
+    grid="display:grid;grid-template-columns:90px 170px 1fr;gap:16px"
+    head=(f'<div style="{grid};padding-bottom:6px;border-bottom:1px solid #d8d4ca;font-size:12px;color:#6b7079;'
+        f'text-transform:uppercase;letter-spacing:0.06em"><span>stock</span><span>action</span><span>why</span></div>')
+    body="".join(f'<div style="{grid};align-items:center;padding:10px 0;border-bottom:1px solid #e6e3dc">'
+        f'<span style="font-weight:600">{r["ticker"]}</span><span>{action_pill(r)}</span><span style="font-size:14px">{r["reason"]}</span></div>'
+        for r in res.values() if r["action"] is not None)
+    return head+body
+
+
+def trade_chart(r,choice):
+    p=cut(r["prices"][["Close"]],choice)["Close"]
+    pos=r["position"].reindex(p.index).fillna(0)
+    fig=go.Figure()
+    for _,part in pos.groupby((pos!=pos.shift()).cumsum()):
+        size=part.iloc[0]
+        if size>0:
+            nxt=p.index.searchsorted(part.index[-1])+1
+            end=p.index[nxt] if nxt<len(p) else part.index[-1]
+            fig.add_vrect(x0=part.index[0],x1=end,fillcolor=held_color,opacity=0.28 if size==1 else 0.1,line_width=0,layer="below")
+    fig.add_trace(go.Scatter(x=p.index,y=p.values,mode="lines",line=dict(color=ink,width=1.4),name="price",hovertemplate="%{y:,.2f}"))
+    trades=r["trades"]
+    trades=trades[(trades["act"]>=p.index[0])&trades["price"].notna()]
+    for kind,symbol,color in [("buy","triangle-up",buy_color),("sell","triangle-down",sell_color)]:
+        sel=trades[trades["to"]>trades["from"]] if kind=="buy" else trades[trades["to"]<trades["from"]]
+        if len(sel):
+            big=(sel["to"]-sel["from"]>0.9) if kind=="buy" else (sel["to"]==0)
+            fig.add_trace(go.Scatter(x=sel["act"],y=sel["price"],mode="markers",name=kind,
+                marker=dict(symbol=symbol,color=color,size=np.where(big,14,9),line=dict(color="white",width=1)),
+                hovertemplate=f"{kind} at %{{y:,.2f}}<extra></extra>"))
+    base_layout(fig,420)
+    fig.update_yaxes(type="log",title_text="price")
+    return fig
+
+
 # ---------- page ----------
 
 st.title("Market stress monitor")
@@ -286,6 +380,97 @@ with b:
         ("1 year",return_text(ret["r_1y"])),
         ("below all-time high",return_text(ret["drawdown"])),
     ]),unsafe_allow_html=True)
+
+# today's actions (trend + entropy strategy on my stocks)
+with st.spinner("Updating my stocks..."):
+    trading=get_trading()
+res={t:r for t,r in trading.items() if "error" not in r}
+failed=[t for t,r in trading.items() if "error" in r]
+
+st.divider()
+st.header("Today's actions")
+if res:
+    us=[r for r in res.values() if tr.exchange(r["ticker"])[0]=="America/New_York"] or list(res.values())
+    based=max(r["last_date"] for r in us)
+    act_on=tr.next_trading_day(based,us[0]["ticker"])
+    a,b,c=st.columns([1,1,2],gap="medium")
+    with a:
+        st.markdown(date_box("based on the close of",f"{based:%a %d %b %Y}"),unsafe_allow_html=True)
+    with b:
+        st.markdown(date_box("act on",f"{act_on:%a %d %b %Y}, at the open",dark=True),unsafe_allow_html=True)
+    late=[t for t,r in res.items() if r["last_date"]<tr.expected_last_close(t)]
+    with c:
+        if late:
+            since=min(res[t]["last_date"] for t in late)
+            st.warning(f"No new close since {since:%a %d %b %Y} for {', '.join(late)}. Do not trade on this list for these stocks.")
+    st.markdown('<div style="height:28px"></div>',unsafe_allow_html=True)
+    left,right=st.columns([1,2.3],gap="large")
+    with left:
+        st.markdown(count_tiles(res),unsafe_allow_html=True)
+    with right:
+        if any(r["action"] is not None for r in res.values()):
+            st.markdown(action_rows(res),unsafe_allow_html=True)
+            st.caption("Other stocks: no change.")
+        else:
+            nxt=min(r["next_check"] for r in res.values())
+            st.write(f"No actions today. The next decision is on the close of {nxt:%a %d %b %Y}.")
+if failed:
+    st.caption(f"Could not load: {', '.join(failed)}")
+
+# my stocks
+if res:
+    st.markdown('<div style="height:32px"></div>',unsafe_allow_html=True)
+    st.header("My stocks")
+    st.caption("Today's action, position, trend and stress of each stock · select one for detail")
+    if st.session_state.get("stock") not in res:
+        st.session_state["stock"]=next(iter(res))
+
+
+    def pick_stock(t):
+        st.session_state["stock"]=t
+
+
+    def line(label,value):
+        return f'<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span>{label}</span><span>{value}</span></div>'
+
+
+    tickers=list(res)
+    for first in range(0,len(tickers),5):
+        for col,t in zip(st.columns(5),tickers[first:first+5]):
+            r=res[t]
+            s=r["stress"]
+            stress_html=pill(s["status"].iloc[-1]) if s is not None and not pd.isna(s["status"].iloc[-1]) else '<span style="color:#6b7079">not enough history</span>'
+            with col:
+                with st.container(border=True):
+                    st.button(t,key=f"stock_{t}",type="primary" if st.session_state["stock"]==t else "secondary",width="stretch",
+                        on_click=pick_stock,args=(t,),help="Show details below")
+                    st.markdown(action_pill(r)+'<div style="font-size:13px;color:#3d424b;margin-top:8px">'
+                        +line("close",f'<span style="{num_style}">{r["close"]:,.2f} ({r["last_date"]:%d %b})</span>')
+                        +line("held",held_text(r["held"]))
+                        +line("trend",r["trend"])
+                        +line("stress",stress_html)+'</div>',unsafe_allow_html=True)
+
+    t=st.session_state["stock"]
+    r=res[t]
+    st.subheader(f"{t} in detail")
+    st.markdown(action_pill(r),unsafe_allow_html=True)
+    last=r["last_action"]
+    since=f" since {r['since']:%d %b %Y}" if r["since"] is not None and r["held"]>0 else ""
+    st.markdown(rows([
+        ("held now",held_text(r["held"])+since),
+        ("last action","—" if last is None else f"{trade_word(last['from'],last['to'])} on {last['act']:%d %b %Y}"),
+        ("open gain",return_text(r["open_gain"]) if r["held"]>0 else "—"),
+    ]),unsafe_allow_html=True)
+    choice=st.segmented_control("Period",list(ranges.keys()),default="1Y",key="range_stock",label_visibility="collapsed") or "1Y"
+    st.plotly_chart(trade_chart(r,choice),width="stretch")
+    st.markdown('<div style="font-size:12px;color:#6b7079">black = price (log scale) · shading = held (dark = full, light = half) · '
+        '▲ buy · ▼ sell (big = full / all, small = half)</div>',unsafe_allow_html=True)
+    if r["stress"] is not None:
+        show_normal=st.toggle("Show normal level",value=True,key="normal_stock")
+        st.plotly_chart(stress_chart(cut(r["stress"],choice),show_normal),width="stretch")
+        st.markdown(legend(),unsafe_allow_html=True)
+    else:
+        st.caption(f"Stress needs 4 years of prices: not available for {t} yet.")
 
 st.divider()
 

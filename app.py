@@ -252,11 +252,13 @@ def count_tiles(res):
 
 
 def action_rows(res):
-    grid="display:grid;grid-template-columns:90px 170px 1fr;gap:16px"
+    # each stock has its own dates: a london stock can be a day ahead of the us ones
+    grid="display:grid;grid-template-columns:90px 170px 1fr 200px;gap:16px"
     head=(f'<div style="{grid};padding-bottom:6px;border-bottom:1px solid #d8d4ca;font-size:12px;color:#6b7079;'
-        f'text-transform:uppercase;letter-spacing:0.06em"><span>stock</span><span>action</span><span>why</span></div>')
+        f'text-transform:uppercase;letter-spacing:0.06em"><span>stock</span><span>action</span><span>why</span><span>based on → act on</span></div>')
     body="".join(f'<div style="{grid};align-items:center;padding:10px 0;border-bottom:1px solid #e6e3dc">'
-        f'<span style="font-weight:600">{r["ticker"]}</span><span>{action_pill(r)}</span><span style="font-size:14px">{r["reason"]}</span></div>'
+        f'<span style="font-weight:600">{r["ticker"]}</span><span>{action_pill(r)}</span><span style="font-size:14px">{r["reason"]}</span>'
+        f'<span style="{num_style};font-size:13px">{r["last_date"]:%d %b} close → {tr.next_trading_day(r["last_date"],r["ticker"]):%a %d %b}</span></div>'
         for r in res.values() if r["action"] is not None)
     return head+body
 
@@ -395,9 +397,9 @@ if res:
     act_on=tr.next_trading_day(based,us[0]["ticker"])
     a,b,c=st.columns([1,1,2],gap="medium")
     with a:
-        st.markdown(date_box("based on the close of",f"{based:%a %d %b %Y}"),unsafe_allow_html=True)
+        st.markdown(date_box("based on the US close of",f"{based:%a %d %b %Y}"),unsafe_allow_html=True)
     with b:
-        st.markdown(date_box("act on",f"{act_on:%a %d %b %Y}, at the open",dark=True),unsafe_allow_html=True)
+        st.markdown(date_box("act on (US stocks)",f"{act_on:%a %d %b %Y}, at the open",dark=True),unsafe_allow_html=True)
     late=[t for t,r in res.items() if r["last_date"]<tr.expected_last_close(t)]
     with c:
         if late:

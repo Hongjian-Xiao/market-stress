@@ -19,9 +19,9 @@ import entropy_stress as es
 
 # ---------- settings ----------
 
-stocks=["SNDK","CORZ","NBIS","MU","NVDA","META","SMSN.IL","AAPL","TSLA","HOOD"]
+stocks=["SNDK","CORZ","NBIS","MU","NVDA","META","SMSN.IL","AAPL","TSLA","APLD"]
 start_close="2026-09-29"    # first close the strategy decides on, nothing held before; its actions are done at the next open
-check_every=5               # decide every 5 trading days, counted from start_close (as tested); 1 = every day
+check_every=1               # decide every 5 trading days, counted from start_close (as tested); 1 = every day
 history_years=12            # indicators use prices from 12 years before start_close (10 years + 2 warm-up, as in notebook 08)
 
 fast_ema=20

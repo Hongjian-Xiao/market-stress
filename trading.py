@@ -19,9 +19,10 @@ import entropy_stress as es
 
 # ---------- settings ----------
 
-stocks=["SNDK","CORZ","NBIS","MU","NVDA","META","SMSN.IL","AAPL","TSLA","APLD"]
+stocks=["SNDK","CORZ","NBIS","VRT","MU","NVDA","META","AAPL","TSM","NFLX"]
 start_close="2026-09-29"    # first close the strategy decides on, nothing held before; its actions are done at the next open
-check_every=1               # decide every 5 trading days, counted from start_close (as tested); 1 = every day
+stock_start={"VRT":"2026-09-30","TSM":"2026-09-30","NFLX":"2026-09-30"}    # stocks added later: their own first close
+check_every=1               # decide every trading day
 history_years=12            # indicators use prices from 12 years before start_close (10 years + 2 warm-up, as in notebook 08)
 
 fast_ema=20
@@ -136,7 +137,7 @@ def reason(old,new):
 def replay(t,data):
     df=indicators(data["Close"])
     target,up,high=strategy(df)
-    days=df.index[df.index>=pd.Timestamp(start_close)]
+    days=df.index[df.index>=pd.Timestamp(stock_start.get(t,start_close))]
     held=0.0
     log=[]
     for i,day in enumerate(days):
@@ -181,7 +182,7 @@ def replay(t,data):
     if n:
         next_check=(last+(check_every-(n-1)%check_every)*exchange(t)[2]).normalize()
     else:
-        next_check=pd.Timestamp(start_close)
+        next_check=pd.Timestamp(stock_start.get(t,start_close))
 
     return {
         "ticker":t,
